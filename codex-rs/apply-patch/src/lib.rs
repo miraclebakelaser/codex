@@ -1435,6 +1435,34 @@ PATCH"#,
     }
 
     #[test]
+    fn test_apply_patch_multiple_change_contexts_success() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("example.py");
+        let original =
+            include_str!("../tests/fixtures/scenarios/019_multiple_context_lines/input/example.py");
+        fs::write(&path, original).unwrap();
+
+        let patch = wrap_patch(&format!(
+            r#"*** Update File: {}
+@@ class BaseClass:
+@@     def method():
+-        # to_remove
++        # to_add"#,
+            path.display()
+        ));
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        apply_patch(&patch, &mut stdout, &mut stderr).unwrap();
+
+        let contents = fs::read_to_string(&path).unwrap();
+        let expected = include_str!(
+            "../tests/fixtures/scenarios/019_multiple_context_lines/expected/example.py"
+        );
+        assert_eq!(contents, expected);
+    }
+
+    #[test]
     fn test_unified_diff() {
         // Start with a file containing four lines.
         let dir = tempdir().unwrap();
@@ -1764,5 +1792,34 @@ g
         let mut stderr = Vec::new();
         let result = apply_patch(&patch, &mut stdout, &mut stderr);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_apply_patch_multiple_change_contexts_missing_context() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("example.py");
+        let original =
+            include_str!("../tests/fixtures/scenarios/019_multiple_context_lines/input/example.py");
+        fs::write(&path, original).unwrap();
+
+        let patch = wrap_patch(&format!(
+            r#"*** Update File: {}
+@@ class BaseClass:
+@@     def missing():
+-        # to_remove
++        # to_add"#,
+            path.display()
+        ));
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let result = apply_patch(&patch, &mut stdout, &mut stderr);
+
+        assert_matches!(
+            result,
+            Err(ApplyPatchError::IoError(IoError { context, .. }))
+                if context.contains("Failed to find context '    def missing():'")
+                    && context.contains(&path.display().to_string())
+        );
     }
 }
