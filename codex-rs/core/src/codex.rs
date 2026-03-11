@@ -20,9 +20,7 @@ use crate::apps::render_apps_section;
 use crate::commit_attribution::commit_message_trailer_instruction;
 use crate::compact;
 use crate::compact::InitialContextInjection;
-use crate::compact::run_inline_auto_compact_task;
-use crate::compact::should_use_remote_compact_task;
-use crate::compact_remote::run_inline_remote_auto_compact_task;
+use crate::compact::run_auto_compact;
 use crate::config::ManagedFeatures;
 use crate::connectors;
 use crate::exec_policy::ExecPolicyManager;
@@ -5676,8 +5674,8 @@ pub(crate) async fn run_turn(
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if token_limit_reached && needs_follow_up {
                     if run_auto_compact(
-                        &sess,
-                        &turn_context,
+                        Arc::clone(&sess),
+                        Arc::clone(&turn_context),
                         InitialContextInjection::BeforeLastUserMessage,
                     )
                     .await
@@ -5854,7 +5852,12 @@ async fn run_pre_sampling_compact(
         .unwrap_or(i64::MAX);
     // Compact if the total usage tokens are greater than the auto compact limit
     if total_usage_tokens >= auto_compact_limit {
-        run_auto_compact(sess, turn_context, InitialContextInjection::DoNotInject).await?;
+        run_auto_compact(
+            Arc::clone(sess),
+            Arc::clone(turn_context),
+            InitialContextInjection::DoNotInject,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -5894,37 +5897,14 @@ async fn maybe_run_previous_model_inline_compact(
         && old_context_window > new_context_window;
     if should_run {
         run_auto_compact(
-            sess,
-            &previous_model_turn_context,
+            Arc::clone(sess),
+            Arc::clone(&previous_model_turn_context),
             InitialContextInjection::DoNotInject,
         )
         .await?;
         return Ok(true);
     }
     Ok(false)
-}
-
-async fn run_auto_compact(
-    sess: &Arc<Session>,
-    turn_context: &Arc<TurnContext>,
-    initial_context_injection: InitialContextInjection,
-) -> CodexResult<()> {
-    if should_use_remote_compact_task(&turn_context.provider) {
-        run_inline_remote_auto_compact_task(
-            Arc::clone(sess),
-            Arc::clone(turn_context),
-            initial_context_injection,
-        )
-        .await?;
-    } else {
-        run_inline_auto_compact_task(
-            Arc::clone(sess),
-            Arc::clone(turn_context),
-            initial_context_injection,
-        )
-        .await?;
-    }
-    Ok(())
 }
 
 fn collect_explicit_app_ids_from_skill_items(

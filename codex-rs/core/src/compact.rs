@@ -9,6 +9,7 @@ use crate::codex::PreviousTurnSettings;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::codex::get_last_assistant_message_from_turn;
+use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::protocol::CompactedItem;
@@ -49,6 +50,19 @@ pub(crate) enum InitialContextInjection {
 
 pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {
     provider.is_openai()
+}
+
+pub(crate) async fn run_auto_compact(
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    initial_context_injection: InitialContextInjection,
+) -> CodexResult<()> {
+    if should_use_remote_compact_task(&turn_context.provider) {
+        run_inline_remote_auto_compact_task(sess, turn_context, initial_context_injection).await?;
+    } else {
+        run_inline_auto_compact_task(sess, turn_context, initial_context_injection).await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn run_inline_auto_compact_task(

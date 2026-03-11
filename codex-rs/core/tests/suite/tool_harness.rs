@@ -3,6 +3,8 @@
 use std::fs;
 
 use assert_matches::assert_matches;
+use codex_core::CodexAuth;
+use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::features::Feature;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::protocol::AskForApproval;
@@ -273,6 +275,93 @@ async fn update_plan_tool_rejects_malformed_payload() -> anyhow::Result<()> {
             "expected tool output to mark success=false for malformed payload"
         );
     }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_conversation_tool_compacts_mid_turn_and_continues() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+
+    let mut builder = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::CompactConversationTool)
+                .expect("test config should allow feature update");
+        });
+    let TestCodex {
+        codex,
+        cwd,
+        session_configured,
+        ..
+    } = builder.build(&server).await?;
+
+    let call_id = "compact-tool-call";
+    let responses_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_function_call(call_id, "compact_conversation", "{}"),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-1", "compaction finished"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+    let compact_summary = format!("{SUMMARY_PREFIX}\nTOOL_COMPACTION_SUMMARY");
+    let compact_mock =
+        responses::mount_compact_user_history_with_summary_once(&server, &compact_summary).await;
+
+    let session_model = session_configured.model.clone();
+
+    codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: "please compact and continue".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: cwd.path().to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            model: session_model,
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let compact_request = compact_mock.single_request();
+    assert!(
+        compact_request.has_function_call(call_id),
+        "expected compact request to include the compact_conversation function call"
+    );
+
+    let requests = responses_mock.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected initial and post-compaction requests"
+    );
+    let follow_up_request = &requests[1];
+    let (output_text, _success_flag) = call_output(follow_up_request, call_id);
+    assert_eq!(output_text, "Conversation compacted");
+    assert!(
+        follow_up_request.body_contains_text("TOOL_COMPACTION_SUMMARY"),
+        "expected post-compaction request to include the compacted summary"
+    );
 
     Ok(())
 }

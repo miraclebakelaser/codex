@@ -9,6 +9,7 @@ use crate::mcp_connection_manager::ToolInfo;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::tools::code_mode::PUBLIC_TOOL_NAME;
 use crate::tools::code_mode_description::augment_tool_spec_for_code_mode;
+use crate::tools::handlers::COMPACT_CONVERSATION_TOOL;
 use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::SEARCH_TOOL_BM25_DEFAULT_LIMIT;
 use crate::tools::handlers::SEARCH_TOOL_BM25_TOOL_NAME;
@@ -110,6 +111,7 @@ pub(crate) struct ToolsConfig {
     pub artifact_tools: bool,
     pub request_user_input: bool,
     pub default_mode_request_user_input: bool,
+    pub compact_conversation_tool: bool,
     pub experimental_supported_tools: Vec<String>,
     pub agent_jobs_tools: bool,
     pub agent_jobs_worker_tools: bool,
@@ -140,6 +142,7 @@ impl ToolsConfig {
         let include_request_user_input = !matches!(session_source, SessionSource::SubAgent(_));
         let include_default_mode_request_user_input =
             include_request_user_input && features.enabled(Feature::DefaultModeRequestUserInput);
+        let include_compact_conversation_tool = features.enabled(Feature::CompactConversationTool);
         let include_search_tool = features.enabled(Feature::Apps);
         let include_artifact_tools =
             features.enabled(Feature::Artifact) && codex_artifacts::can_manage_artifact_runtime();
@@ -215,6 +218,7 @@ impl ToolsConfig {
             artifact_tools: include_artifact_tools,
             request_user_input: include_request_user_input,
             default_mode_request_user_input: include_default_mode_request_user_input,
+            compact_conversation_tool: include_compact_conversation_tool,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
             agent_jobs_tools: include_agent_jobs,
             agent_jobs_worker_tools,
@@ -1988,6 +1992,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::ArtifactsHandler;
     use crate::tools::handlers::CodeModeHandler;
+    use crate::tools::handlers::CompactConversationHandler;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::JsReplHandler;
@@ -2013,6 +2018,7 @@ pub(crate) fn build_specs(
     let shell_handler = Arc::new(ShellHandler);
     let unified_exec_handler = Arc::new(UnifiedExecHandler);
     let plan_handler = Arc::new(PlanHandler);
+    let compact_conversation_handler = Arc::new(CompactConversationHandler);
     let apply_patch_handler = Arc::new(ApplyPatchHandler);
     let dynamic_tool_handler = Arc::new(DynamicToolHandler);
     let view_image_handler = Arc::new(ViewImageHandler);
@@ -2140,6 +2146,11 @@ pub(crate) fn build_specs(
         config.code_mode_enabled,
     );
     builder.register_handler("update_plan", plan_handler);
+
+    if config.compact_conversation_tool {
+        builder.push_spec(COMPACT_CONVERSATION_TOOL.clone());
+        builder.register_handler("compact_conversation", compact_conversation_handler);
+    }
 
     if config.js_repl_enabled {
         push_tool_spec(
@@ -3039,6 +3050,46 @@ mod tests {
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(&tools, &["js_repl", "js_repl_reset"]);
+    }
+
+    #[test]
+    fn compact_conversation_tool_requires_feature_flag() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let features = Features::with_defaults();
+
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+
+        assert_lacks_tool_name(&tools, "compact_conversation");
+    }
+
+    #[test]
+    fn compact_conversation_tool_enabled_adds_tool() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::CompactConversationTool);
+
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let compact_conversation_tool = find_tool(&tools, "compact_conversation");
+        assert_eq!(
+            compact_conversation_tool.spec,
+            COMPACT_CONVERSATION_TOOL.clone()
+        );
     }
 
     #[test]
